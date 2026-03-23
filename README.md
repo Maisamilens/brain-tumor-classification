@@ -22,6 +22,8 @@ README.md	Project description and instructions
 custom_cnn.ipynb.ipynb	Notebook for building and training custom CNN
 pretrained_ensemble.ipynb.ipynb	Notebook for evaluating pre-trained models and ensembles
 requirements.txt	Python dependencies
+
+
 📊 Dataset
 
 The dataset is a combination of Figshare, Br35H, and cleaned sources. It contains 7023 MRI images categorized into 4 classes:
@@ -51,6 +53,8 @@ from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropou
 from tensorflow.keras.preprocessing import image
 from tensorflow.keras.callbacks import ReduceLROnPlateau, ModelCheckpoint
 from sklearn.metrics import confusion_matrix
+
+
 🔄 Data Processing
 Load and Label Dataset
 def get_data_labels(directory, shuffle=True, random_state=0):
@@ -76,6 +80,8 @@ def get_dataset(paths, labels, image_size, n_channels=1, batch_size=32):
     path_ds = tf.data.Dataset.from_tensor_slices((paths, labels))
     dataset = path_ds.map(lambda p, l: parse_function(p, l, image_size, n_channels), tf.data.AUTOTUNE)
     return dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+
 🏋️ Training Setup
 Image size: 168 × 168
 Channels: Grayscale (1 channel)
@@ -88,16 +94,24 @@ test_paths, test_labels = get_data_labels("/kaggle/input/brain-tumor-mri-dataset
 
 train_ds = get_dataset(train_paths, train_labels, (168,168))
 test_ds = get_dataset(test_paths, test_labels, (168,168))
+
+
 📈 Results
 Model	Accuracy	Precision	Recall	F1-score
 Custom CNN	99.54%	99.55%	99.52%	99.53%
 EfficientNetV2L	99.47%	99.48%	99.46%	99.47%
 InceptionV3	99.39%	99.41%	99.37%	99.39%
 Ensemble 1	99.47%	99.48%	99.46%	99.47%
+
+
 🧩 Notebooks
 custom_cnn.ipynb.ipynb – Build and train custom CNN model
 pretrained_ensemble.ipynb.ipynb – Evaluate pre-trained models & ensemble strategies
+
+
 📫 Contact
 Maisam Abbas – s1129105@mail.yzu.edu.tw
+
+
 🔗 References
 Abbas, M., Hassan, M., Wang, R.-Z., Teng, C.-H. Brain Tumor Classification in MRI Images Using Combined Transfer Learning and Convolutional Neural Networks. Submitted to Journal of Imaging, 2026.
