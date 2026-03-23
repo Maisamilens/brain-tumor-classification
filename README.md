@@ -17,6 +17,7 @@ Ensemble strategies to improve prediction accuracy
 Our approach achieves state-of-the-art results on the Kaggle-Multiclass brain MRI dataset, with 99.54% accuracy for the custom CNN and over 99% precision, recall, and F1-score for top models.
 
 📦 Repository Contents
+
 File	Description
 README.md	Project description and instructions
 custom_cnn.ipynb.ipynb	Notebook for building and training custom CNN
@@ -38,6 +39,7 @@ The dataset link: Brain Tumor MRI Dataset on Kaggle
 Note: The "No Tumor" images were obtained from the Br35H dataset.
 
 ⚙️ Setup & Installation
+
 Install Dependencies
 pip install --upgrade tensorflow
 pip install --upgrade tensorflow[and-cuda]
@@ -56,6 +58,7 @@ from sklearn.metrics import confusion_matrix
 
 
 🔄 Data Processing
+
 Load and Label Dataset
 def get_data_labels(directory, shuffle=True, random_state=0):
     from sklearn.utils import shuffle
@@ -83,6 +86,7 @@ def get_dataset(paths, labels, image_size, n_channels=1, batch_size=32):
 
 
 🏋️ Training Setup
+
 Image size: 168 × 168
 Channels: Grayscale (1 channel)
 Classes: 4
@@ -97,6 +101,7 @@ test_ds = get_dataset(test_paths, test_labels, (168,168))
 
 
 📈 Results
+
 Model	Accuracy	Precision	Recall	F1-score
 Custom CNN	99.54%	99.55%	99.52%	99.53%
 EfficientNetV2L	99.47%	99.48%	99.46%	99.47%
@@ -105,13 +110,16 @@ Ensemble 1	99.47%	99.48%	99.46%	99.47%
 
 
 🧩 Notebooks
+
 custom_cnn.ipynb.ipynb – Build and train custom CNN model
 pretrained_ensemble.ipynb.ipynb – Evaluate pre-trained models & ensemble strategies
 
 
 📫 Contact
+
 Maisam Abbas – s1129105@mail.yzu.edu.tw
 
 
 🔗 References
+
 Abbas, M., Hassan, M., Wang, R.-Z., Teng, C.-H. Brain Tumor Classification in MRI Images Using Combined Transfer Learning and Convolutional Neural Networks. Submitted to Journal of Imaging, 2026.
