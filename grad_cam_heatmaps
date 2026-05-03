@@ -1,0 +1,622 @@
+
+===============================================================================
+BRAIN TUMOR MRI - STATE-OF-THE-ART GRAD-CAM VISUALIZATION [CORRECTED VERSION]
+===============================================================================
+Features:
+- Loads and tests multiple pre-trained models
+- Generates Grad-CAM heatmaps for attention visualization
+- Separates correct vs incorrect predictions
+- Creates professional multi-row layouts
+- Handles "notumor" class special case (no heatmap)
+- Produces high-resolution output (300+ DPI)
+- Shows model comparison metrics
+===============================================================================
+"""
+
+import os
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+import matplotlib.pyplot as plt
+import cv2
+from pathlib import Path
+import warnings
+import gc
+warnings.filterwarnings('ignore')
+
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+# Test Dataset Paths
+TEST_DATASET_ROOT = '/kaggle/input/brain-tumor-mri-dataset/Testing'
+CLASS_LABELS = ['glioma', 'meningioma', 'notumor', 'pituitary']
+IMG_SIZE = (224, 224)
+
+# Model Paths
+MODEL_PATHS = {
+    'Custom_CNN': '/kaggle/input/custom_models/tensorflow2/default/1/custom_cnn_model_best.keras',
+    'InceptionV3': '/kaggle/input/custom_models/tensorflow2/default/1/model1_inceptionv3_class_weights_best.keras',
+    'EfficientNetV2L': '/kaggle/input/custom_models/tensorflow2/default/1/model2_efficientnetv2l_class_weights_best.keras',
+    'ResNet152V2': '/kaggle/input/custom_models/tensorflow2/default/1/model3_resnet152v2_class_weights.keras',
+    'Xception': '/kaggle/input/custom_models/tensorflow2/default/1/model4_xception_class_weights.keras',
+    'VGG16': '/kaggle/input/custom_models/tensorflow2/default/1/model5_vgg16_class_weights_best.keras',
+    'MobileNetV2': '/kaggle/input/custom_models/tensorflow2/default/1/model6_mobilenetv2_class_weights_best.keras',
+}
+
+OUTPUT_DIR = '/kaggle/working/'
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+print("="*80)
+print("BRAIN TUMOR MRI - GRAD-CAM VISUALIZATION PIPELINE")
+print("="*80)
+print(f"TensorFlow Version: {tf.__version__}")
+print(f"Output Directory: {OUTPUT_DIR}")
+
+# ==============================================================================
+# 1. LOAD ALL TEST IMAGES (FIXED - Handle Different Image Sizes)
+# ==============================================================================
+def load_test_dataset(root_path, class_labels):
+    """
+    Load all test images with their labels.
+    FIXED: Handles images of different sizes without numpy array shape mismatch
+    """
+    images = []  # Keep as list to handle variable sizes
+    labels = []
+    paths = []
+    
+    for class_idx, class_name in enumerate(class_labels):
+        class_dir = os.path.join(root_path, class_name)
+        if not os.path.exists(class_dir):
+            print(f"Warning: Class directory not found: {class_dir}")
+            continue
+        
+        try:
+            image_files = [f for f in os.listdir(class_dir) 
+                          if f.lower().endswith(('.jpg', '.png', '.jpeg'))]
+        except Exception as e:
+            print(f"Error reading directory {class_dir}: {e}")
+            continue
+        
+        loaded_count = 0
+        for img_file in sorted(image_files):
+            img_path = os.path.join(class_dir, img_file)
+            try:
+                img = cv2.imread(img_path)
+                if img is not None:
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    # Store as list (not numpy array) to handle different sizes
+                    images.append(img)
+                    labels.append(class_idx)
+                    paths.append(img_path)
+                    loaded_count += 1
+            except Exception as e:
+                print(f"Error loading {img_path}: {e}")
+                continue
+        
+        print(f"  {class_name}: {loaded_count} images loaded")
+    
+    return images, np.array(labels), paths  # Return list for images, array for labels
+
+print("\nLoading test dataset...")
+images, true_labels, image_paths = load_test_dataset(TEST_DATASET_ROOT, CLASS_LABELS)
+
+if len(images) == 0:
+    print("ERROR: No images loaded!")
+    exit(1)
+
+print(f"\n✓ Total: {len(images)} images loaded across {len(CLASS_LABELS)} classes")
+print(f"✓ Image dimensions: Variable (will be resized to {IMG_SIZE})")
+
+# ==============================================================================
+# 2. GRAD-CAM IMPLEMENTATION
+# ==============================================================================
+def find_last_conv_layer(model):
+    """Find the last convolutional layer in the model."""
+    for layer in reversed(model.layers):
+        if isinstance(layer, (tf.keras.layers.Conv2D, tf.keras.layers.Conv3D)):
+            return layer.name
+        if hasattr(layer, 'layers'):
+            for sublayer in reversed(layer.layers):
+                if isinstance(sublayer, (tf.keras.layers.Conv2D, tf.keras.layers.Conv3D)):
+                    return sublayer.name
+    raise ValueError("No convolutional layer found in model")
+
+def make_gradcam_heatmap(img_array, model, layer_name, pred_index=None):
+    """
+    Generate Grad-CAM heatmap.
+    
+    Args:
+        img_array: Input image array (batch_size, height, width, channels)
+        model: Keras model
+        layer_name: Name of the convolutional layer
+        pred_index: Class index (if None, uses the predicted class)
+    
+    Returns:
+        Normalized heatmap
+    """
+    try:
+        grad_model = keras.models.Model(
+            inputs=[model.inputs],
+            outputs=[model.get_layer(layer_name).output, model.output]
+        )
+    except Exception as e:
+        print(f"Error creating grad_model: {e}")
+        return None
+
+    try:
+        with tf.GradientTape() as tape:
+            conv_outputs, predictions = grad_model(img_array, training=False)
+            
+            if pred_index is None:
+                pred_index = tf.argmax(predictions[0])
+            
+            class_channel = predictions[:, pred_index]
+
+        grads = tape.gradient(class_channel, conv_outputs)
+        
+        if grads is None:
+            return None
+        
+        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+        conv_outputs = conv_outputs[0]
+        heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
+        heatmap = tf.squeeze(heatmap)
+        heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-10)
+        
+        return heatmap.numpy()
+    
+    except Exception as e:
+        print(f"Error computing heatmap: {e}")
+        return None
+
+def superimpose_heatmap(img, heatmap, alpha=0.4):
+    """Overlay heatmap on original image using Jet colormap."""
+    try:
+        # Ensure img is the right size for heatmap
+        heatmap_resized = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
+        heatmap_resized = np.uint8(255 * heatmap_resized)
+        
+        heatmap_color = cv2.applyColorMap(heatmap_resized, cv2.COLORMAP_JET)
+        heatmap_color = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
+        
+        superimposed = cv2.addWeighted(img, 1 - alpha, heatmap_color, alpha, 0)
+        return superimposed
+    except Exception as e:
+        print(f"Error superimposing heatmap: {e}")
+        return img
+
+# ==============================================================================
+# 3. LOAD AND EVALUATE MODELS
+# ==============================================================================
+print("\n" + "="*80)
+print("LOADING AND EVALUATING MODELS")
+print("="*80)
+
+loaded_models = {}
+model_accuracies = {}
+
+for model_name, model_path in MODEL_PATHS.items():
+    if not os.path.exists(model_path):
+        print(f"⚠ {model_name}: Model file not found")
+        continue
+    
+    try:
+        print(f"\nLoading {model_name}...", end=" ", flush=True)
+        model = keras.models.load_model(model_path)
+        loaded_models[model_name] = model
+        
+        # Preprocess test images (NOW handle variable sizes)
+        test_imgs_processed = np.array([
+            cv2.resize(img, IMG_SIZE).astype('float32') / 255.0 
+            for img in images
+        ])
+        
+        # Get predictions
+        preds = model.predict(test_imgs_processed, verbose=0)
+        pred_labels = np.argmax(preds, axis=1)
+        
+        # Calculate accuracy
+        accuracy = np.mean(pred_labels == true_labels)
+        model_accuracies[model_name] = accuracy
+        
+        print(f"✓ Loaded | Accuracy: {accuracy*100:.2f}%")
+        
+        # Clear memory
+        del test_imgs_processed
+        del preds
+        gc.collect()
+        
+    except Exception as e:
+        print(f"✗ Failed: {str(e)[:60]}")
+        continue
+
+if not loaded_models:
+    print("ERROR: No models loaded successfully!")
+    exit(1)
+
+print(f"\n✓ Loaded {len(loaded_models)} models successfully")
+
+# Select best model
+best_model_name = max(model_accuracies, key=model_accuracies.get)
+best_model = loaded_models[best_model_name]
+best_accuracy = model_accuracies[best_model_name]
+
+print(f"\n{'='*80}")
+print(f"SELECTED MODEL: {best_model_name}")
+print(f"Overall Accuracy: {best_accuracy*100:.2f}%")
+print(f"{'='*80}")
+
+# ==============================================================================
+# 4. GENERATE PREDICTIONS AND IDENTIFY ERRORS
+# ==============================================================================
+print("\nGenerating predictions...")
+
+# Process all images (now handling variable sizes)
+test_imgs_processed = np.array([
+    cv2.resize(img, IMG_SIZE).astype('float32') / 255.0 
+    for img in images
+])
+
+predictions = best_model.predict(test_imgs_processed, verbose=0)
+pred_labels = np.argmax(predictions, axis=1)
+pred_confidences = np.max(predictions, axis=1)
+
+# Separate correct and incorrect
+correct_indices = np.where(pred_labels == true_labels)[0]
+error_indices = np.where(pred_labels != true_labels)[0]
+
+print(f"✓ Correct predictions: {len(correct_indices)}")
+print(f"✗ Incorrect predictions: {len(error_indices)}")
+
+# ==============================================================================
+# 5. GENERATE GRAD-CAM VISUALIZATIONS
+# ==============================================================================
+print("\nGenerating Grad-CAM heatmaps...")
+
+try:
+    target_layer = find_last_conv_layer(best_model)
+    print(f"✓ Target convolution layer: {target_layer}")
+except ValueError as e:
+    print(f"✗ {e}")
+    exit(1)
+
+# Store heatmap data
+heatmap_data = {}
+heatmap_success = 0
+
+for idx in range(len(image_paths)):
+    try:
+        heatmap = make_gradcam_heatmap(
+            np.expand_dims(test_imgs_processed[idx], axis=0),
+            best_model,
+            target_layer
+        )
+        heatmap_data[idx] = heatmap
+        if heatmap is not None:
+            heatmap_success += 1
+    except Exception as e:
+        heatmap_data[idx] = None
+        if idx < 5:  # Only print first few errors
+            print(f"Warning: Could not generate heatmap for image {idx}: {str(e)[:40]}")
+
+print(f"✓ Generated {heatmap_success}/{len(image_paths)} heatmaps")
+
+# ==============================================================================
+# 6. CREATE COMPREHENSIVE VISUALIZATION
+# ==============================================================================
+
+def create_visualization(indices, title_prefix, is_error=False):
+    """Create a visualization for a set of image indices."""
+    if len(indices) == 0:
+        return None
+    
+    num_images = len(indices)
+    fig_height = num_images * 2.5 + 1
+    
+    try:
+        fig = plt.figure(figsize=(18, fig_height), dpi=150)
+        fig.suptitle(
+            f'{title_prefix} - {best_model_name} | {len(indices)} Images',
+            fontsize=18, weight='bold', y=0.995
+        )
+        
+        for plot_idx, global_idx in enumerate(indices):
+            img_orig = images[global_idx]
+            img_resized = cv2.resize(img_orig, IMG_SIZE)
+            true_class = CLASS_LABELS[true_labels[global_idx]]
+            pred_class = CLASS_LABELS[pred_labels[global_idx]]
+            confidence = pred_confidences[global_idx] * 100
+            is_correct = true_labels[global_idx] == pred_labels[global_idx]
+            
+            # Row 1: Original Image with Ground Truth
+            ax1 = plt.subplot(num_images, 3, plot_idx * 3 + 1)
+            ax1.imshow(img_orig)
+            ax1.set_title(f'Original MRI\n[Ground Truth: {true_class.upper()}]', 
+                         fontsize=11, weight='bold', color='navy')
+            ax1.axis('off')
+            
+            # Row 2: Prediction Result
+            ax2 = plt.subplot(num_images, 3, plot_idx * 3 + 2)
+            ax2.imshow(img_resized)
+            
+            color = 'green' if is_correct else 'red'
+            symbol = '✓' if is_correct else '✗'
+            title_text = f'Prediction: {pred_class.upper()}\n{symbol} {confidence:.1f}% Confidence'
+            ax2.set_title(title_text, fontsize=11, weight='bold', color=color)
+            ax2.axis('off')
+            
+            # Row 3: Grad-CAM Heatmap (skip for notumor)
+            ax3 = plt.subplot(num_images, 3, plot_idx * 3 + 3)
+            
+            if true_class.lower() == 'notumor':
+                ax3.imshow(img_resized)
+                ax3.set_title('No Tumor Region\n[Heatmap N/A]', fontsize=11, weight='bold', color='gray')
+                ax3.axis('off')
+            else:
+                heatmap = heatmap_data[global_idx]
+                if heatmap is not None:
+                    superimposed = superimpose_heatmap(img_resized, heatmap, alpha=0.5)
+                    ax3.imshow(superimposed)
+                    ax3.set_title('Grad-CAM Heatmap\n[Attention Region]', fontsize=11, weight='bold', color='darkblue')
+                else:
+                    ax3.imshow(img_resized)
+                    ax3.set_title('Heatmap Failed', fontsize=11, weight='bold', color='orange')
+                ax3.axis('off')
+        
+        plt.tight_layout()
+        return fig
+    
+    except Exception as e:
+        print(f"Error creating visualization: {e}")
+        return None
+
+# ==============================================================================
+# 7. GENERATE AND SAVE VISUALIZATIONS
+# ==============================================================================
+print("\n" + "="*80)
+print("CREATING VISUALIZATIONS")
+print("="*80)
+
+# Limit to reasonable number for visualization
+max_per_category = 8
+correct_to_show = correct_indices[:max_per_category]
+errors_to_show = error_indices[:max_per_category]
+
+# Correct Predictions
+if len(correct_to_show) > 0:
+    print(f"\nCreating CORRECT predictions visualization ({len(correct_to_show)} images)...")
+    fig_correct = create_visualization(correct_to_show, "CORRECT PREDICTIONS", is_error=False)
+    if fig_correct:
+        output_path = os.path.join(OUTPUT_DIR, 'gradcam_correct_predictions.png')
+        fig_correct.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+        print(f"✓ Saved: {output_path}")
+        plt.close(fig_correct)
+        gc.collect()
+
+# Error Predictions
+if len(errors_to_show) > 0:
+    print(f"\nCreating ERROR predictions visualization ({len(errors_to_show)} images)...")
+    fig_errors = create_visualization(errors_to_show, "INCORRECT PREDICTIONS (Error Analysis)", is_error=True)
+    if fig_errors:
+        output_path = os.path.join(OUTPUT_DIR, 'gradcam_error_predictions.png')
+        fig_errors.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+        print(f"✓ Saved: {output_path}")
+        plt.close(fig_errors)
+        gc.collect()
+else:
+    print("\n⚠ No errors found - skipping error predictions figure")
+
+# ==============================================================================
+# 8. CREATE COMPARATIVE GRID VISUALIZATION (All Classes)
+# ==============================================================================
+print("\nCreating comparative class-wise visualization...")
+
+try:
+    fig_comparison = plt.figure(figsize=(20, 16), dpi=150)
+    fig_comparison.suptitle(
+        f'Brain Tumor Classification - {best_model_name}\nClass-wise Analysis with Grad-CAM Heatmaps',
+        fontsize=20, weight='bold', y=0.995
+    )
+
+    for class_idx, class_name in enumerate(CLASS_LABELS):
+        class_mask = true_labels == class_idx
+        class_indices = np.where(class_mask)[0]
+        
+        if len(class_indices) == 0:
+            continue
+        
+        # Show up to 3 examples per class
+        examples_to_show = class_indices[:3]
+        
+        for example_count, global_idx in enumerate(examples_to_show):
+            img_orig = images[global_idx]
+            img_resized = cv2.resize(img_orig, IMG_SIZE)
+            true_class = CLASS_LABELS[true_labels[global_idx]]
+            pred_class = CLASS_LABELS[pred_labels[global_idx]]
+            confidence = pred_confidences[global_idx] * 100
+            is_correct = true_labels[global_idx] == pred_labels[global_idx]
+            
+            base_row = class_idx * 3
+            
+            # Original Image
+            ax1 = plt.subplot(4, 9, base_row * 9 + example_count * 3 + 1)
+            ax1.imshow(img_orig)
+            if example_count == 0:
+                ax1.set_ylabel(f'{true_class.upper()}\n(Ground Truth)', fontsize=12, weight='bold')
+            ax1.set_title(f'Example {example_count+1}', fontsize=10)
+            ax1.axis('off')
+            
+            # Prediction
+            ax2 = plt.subplot(4, 9, base_row * 9 + example_count * 3 + 2)
+            ax2.imshow(img_resized)
+            color = 'green' if is_correct else 'red'
+            symbol = '✓' if is_correct else '✗'
+            ax2.set_title(f'{symbol} {pred_class.upper()}\n{confidence:.0f}%', 
+                         fontsize=10, weight='bold', color=color)
+            ax2.axis('off')
+            
+            # Heatmap
+            ax3 = plt.subplot(4, 9, base_row * 9 + example_count * 3 + 3)
+            if true_class.lower() == 'notumor':
+                ax3.imshow(img_resized)
+                ax3.set_title('No Tumor', fontsize=10, color='gray')
+            else:
+                heatmap = heatmap_data[global_idx]
+                if heatmap is not None:
+                    superimposed = superimpose_heatmap(img_resized, heatmap, alpha=0.5)
+                    ax3.imshow(superimposed)
+                else:
+                    ax3.imshow(img_resized)
+                ax3.set_title('Grad-CAM', fontsize=10)
+            ax3.axis('off')
+
+    plt.tight_layout()
+    output_path = os.path.join(OUTPUT_DIR, 'gradcam_class_comparison.png')
+    fig_comparison.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    print(f"✓ Saved: {output_path}")
+    plt.close(fig_comparison)
+    gc.collect()
+
+except Exception as e:
+    print(f"Error creating comparison visualization: {e}")
+
+# ==============================================================================
+# 9. GENERATE DETAILED METRICS REPORT
+# ==============================================================================
+print("\n" + "="*80)
+print("PERFORMANCE METRICS SUMMARY")
+print("="*80)
+
+# Per-class accuracy
+class_accuracies = {}
+class_samples = {}
+for class_idx, class_name in enumerate(CLASS_LABELS):
+    class_mask = true_labels == class_idx
+    if np.sum(class_mask) > 0:
+        class_acc = np.mean(pred_labels[class_mask] == class_idx)
+        class_accuracies[class_name] = class_acc
+        class_samples[class_name] = np.sum(class_mask)
+
+print(f"\nModel: {best_model_name}")
+print(f"Overall Accuracy: {best_accuracy*100:.2f}%")
+print(f"\nPer-Class Breakdown:")
+print(f"{'Class':<15} {'Samples':<10} {'Accuracy':<15}")
+print("-" * 40)
+for class_name in CLASS_LABELS:
+    if class_name in class_accuracies:
+        acc = class_accuracies[class_name]
+        samples = class_samples[class_name]
+        print(f"{class_name:<15} {samples:<10} {acc*100:>6.2f}%")
+
+# Confusion analysis
+print(f"\nError Analysis:")
+if len(error_indices) > 0:
+    print(f"Total Errors: {len(error_indices)} / {len(images)}")
+    print(f"\nSample Misclassification Patterns (first 10):")
+    for i, error_idx in enumerate(error_indices[:10]):
+        true_class = CLASS_LABELS[true_labels[error_idx]]
+        pred_class = CLASS_LABELS[pred_labels[error_idx]]
+        conf = pred_confidences[error_idx] * 100
+        print(f"  {i+1}. {true_class} → {pred_class} ({conf:.1f}%)")
+else:
+    print("No errors found - Perfect classification!")
+
+# ==============================================================================
+# 10. SAVE SUMMARY REPORT
+# ==============================================================================
+print("\n" + "="*80)
+print("SAVING DETAILED REPORT")
+print("="*80)
+
+report_path = os.path.join(OUTPUT_DIR, 'gradcam_analysis_report.txt')
+try:
+    with open(report_path, 'w') as f:
+        f.write("="*80 + "\n")
+        f.write("BRAIN TUMOR MRI - GRAD-CAM ANALYSIS REPORT\n")
+        f.write("="*80 + "\n\n")
+        
+        f.write("MODEL INFORMATION\n")
+        f.write("-"*80 + "\n")
+        f.write(f"Selected Model: {best_model_name}\n")
+        f.write(f"Overall Accuracy: {best_accuracy*100:.2f}%\n")
+        f.write(f"Total Test Images: {len(images)}\n")
+        f.write(f"Correct Predictions: {len(correct_indices)}\n")
+        f.write(f"Incorrect Predictions: {len(error_indices)}\n\n")
+        
+        f.write("PER-CLASS ACCURACY\n")
+        f.write("-"*80 + "\n")
+        f.write(f"{'Class':<20} {'Samples':<15} {'Accuracy':<15}\n")
+        f.write("-"*80 + "\n")
+        for class_name in CLASS_LABELS:
+            if class_name in class_accuracies:
+                acc = class_accuracies[class_name]
+                samples = class_samples[class_name]
+                f.write(f"{class_name:<20} {samples:<15} {acc*100:>6.2f}%\n")
+        
+        f.write("\n" + "="*80 + "\n")
+        f.write("GRAD-CAM VISUALIZATION DETAILS\n")
+        f.write("="*80 + "\n")
+        f.write(f"Target Convolutional Layer: {target_layer}\n")
+        f.write(f"Heatmaps Generated: {sum(1 for h in heatmap_data.values() if h is not None)}\n")
+        f.write(f"Visualization Method: Grad-CAM with Jet Colormap\n")
+        f.write(f"Heatmap Overlay Alpha: 0.5\n")
+        f.write(f"Image Input Size: {IMG_SIZE}\n\n")
+        
+        f.write("SPECIAL HANDLING\n")
+        f.write("-"*80 + "\n")
+        f.write("- 'notumor' class: Heatmaps not displayed (no tumor region to visualize)\n")
+        f.write("- Correct predictions: Marked in GREEN\n")
+        f.write("- Incorrect predictions: Marked in RED\n")
+        f.write("- All visualizations: 300 DPI, high-resolution output\n\n")
+        
+        if len(error_indices) > 0:
+            f.write("SAMPLE ERROR CASES (First 15)\n")
+            f.write("-"*80 + "\n")
+            for i, error_idx in enumerate(error_indices[:15]):
+                true_class = CLASS_LABELS[true_labels[error_idx]]
+                pred_class = CLASS_LABELS[pred_labels[error_idx]]
+                conf = pred_confidences[error_idx] * 100
+                f.write(f"{i+1}. True: {true_class:<12} → Predicted: {pred_class:<12} ({conf:>5.1f}%)\n")
+        
+        f.write("\n" + "="*80 + "\n")
+        f.write("DATASET INFORMATION\n")
+        f.write("="*80 + "\n")
+        f.write(f"Test Dataset: /kaggle/input/brain-tumor-mri-dataset/Testing/\n")
+        f.write(f"Total Test Images: {len(images)}\n")
+        f.write(f"Classes: {', '.join(CLASS_LABELS)}\n")
+        f.write(f"Image Resize Dimension: {IMG_SIZE}\n")
+        f.write(f"TensorFlow Version: {tf.__version__}\n")
+    
+    print(f"✓ Report saved: {report_path}")
+
+except Exception as e:
+    print(f"Error saving report: {e}")
+
+# ==============================================================================
+# FINAL SUMMARY
+# ==============================================================================
+print("\n" + "="*80)
+print("✅ VISUALIZATION PIPELINE COMPLETE!")
+print("="*80)
+print("\nGenerated Output Files:")
+print(f"1. gradcam_correct_predictions.png")
+print(f"   └─ Correct classifications with Grad-CAM heatmaps")
+print(f"\n2. gradcam_error_predictions.png")
+print(f"   └─ Incorrect classifications with analysis (Addresses Comment #11)")
+print(f"\n3. gradcam_class_comparison.png")
+print(f"   └─ Class-wise comparative analysis")
+print(f"\n4. gradcam_analysis_report.txt")
+print(f"   └─ Detailed metrics and performance analysis")
+
+print(f"\nAll files saved to: {OUTPUT_DIR}")
+print(f"\nSummary Statistics:")
+print(f"  • Model: {best_model_name}")
+print(f"  • Accuracy: {best_accuracy*100:.2f}%")
+print(f"  • Total Images: {len(images)}")
+print(f"  • Correct: {len(correct_indices)} | Errors: {len(error_indices)}")
+print("="*80)
+print("Ready for paper submission! 🚀")
+print("="*80)
