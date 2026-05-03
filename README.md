@@ -4,7 +4,6 @@ This repository contains the code and notebooks for the research project:
 
 “Brain Tumor Classification in MRI Images Using Combined Transfer Learning and Convolutional Neural Networks”
 Authors: Maisam Abbas, Muhammad Hassan, Ran-Zan Wang*, Chin-Hung Teng
-Corresponding Author: Ran-Zan Wang – rzwang@saturn.yzu.edu.tw
 
 🧠 Project Overview
 
