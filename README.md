@@ -121,4 +121,6 @@ Maisam Abbas – s1129105@mail.yzu.edu.tw
 
 🔗 References
 
-Abbas, M., Hassan, M., Wang, R.-Z., Teng, C.-H. Brain Tumor Classification in MRI Images Using Combined Transfer Learning and Convolutional Neural Networks. Submitted to Journal of Imaging, 2026.
+If you find this repository useful, please cite:
+
+Abbas, M., Hassan, M., Wang, R.-Z., & Teng, C.-H. (2026). **Brain Tumor Classification in MRI Images Using Combined Transfer Learning and Convolutional Neural Networks**. *Journal of Imaging*, **12**(6), Article 233. https://doi.org/10.3390/jimaging12060233
